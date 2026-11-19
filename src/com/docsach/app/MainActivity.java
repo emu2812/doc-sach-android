@@ -549,6 +549,40 @@ public class MainActivity extends Activity {
             return SyncStore.hasFolder(MainActivity.this);
         }
 
+        /** Provider button from the page (SIMPLE UI). "mega": when the
+         *  MEGA app is installed, open the system picker (MEGA shows up
+         *  there with the account signed in on this phone); otherwise
+         *  open MEGA's web so the user can sign in there. */
+        @JavascriptInterface
+        public void cloudButton(String provider) {
+            if (!"mega".equals(provider)) return;
+            boolean installed;
+            try {
+                getPackageManager().getPackageInfo("nz.mega.android", 0);
+                installed = true;
+            } catch (Exception e) {
+                installed = false;
+            }
+            if (installed) {
+                runOnUiThread(() -> {
+                    WebView w = webView;
+                    if (w != null) {
+                        w.evaluateJavascript(
+                                "window.DocSachCloudPick&&window.DocSachCloudPick()",
+                                null);
+                    }
+                });
+            } else {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW,
+                            Uri.parse("https://mega.nz")));
+                } catch (Exception ignored) {
+                }
+                syncStatus("Chưa có ứng dụng MEGA trên máy — đã mở web MEGA."
+                        + " Cài app MEGA rồi bấm lại để chọn sách trực tiếp.");
+            }
+        }
+
         /** Opens a cloud service's website in the phone's browser, so
          *  the user can sign in to ANOTHER account there. Restricted
          *  to the three services' own hosts. */
