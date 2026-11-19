@@ -43,6 +43,18 @@ public class PlaybackService extends Service {
     private boolean focusHeld = false;
     private boolean resumeOnGain = false;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private String lastNotifySignature = null;
+
+    /** A command the USER issued (lock screen, notification, headset).
+     *  It cancels any pending auto-resume: if the user pauses the book
+     *  during a phone call, the book must stay paused when the call
+     *  ends, and if they press play, it must not "resume" twice. */
+    private void sendUser(String command) {
+        if ("play".equals(command) || "pause".equals(command)) {
+            resumeOnGain = false;
+        }
+        NativePlayer.send(command);
+    }
 
     private final AudioManager.OnAudioFocusChangeListener focusListener =
             new AudioManager.OnAudioFocusChangeListener() {
@@ -54,7 +66,11 @@ public class PlaybackService extends Service {
                             NativePlayer.send("pause");
                         }
                         focusHeld = false;
-                    } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+                    } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+                            || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
+                        // A call, or a prompt we cannot duck under (the
+                        // page's volume is not ours to lower): pause and
+                        // remember to resume when focus returns.
                         if (NativePlayer.playing) {
                             resumeOnGain = true;
                             NativePlayer.send("pause");
@@ -89,51 +105,50 @@ public class PlaybackService extends Service {
         session = new MediaSession(this, "DocSach");
         session.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
-        Intent mediaButton = new Intent(Intent.ACTION_MEDIA_BUTTON);
-        mediaButton.setClass(this, MediaButtonReceiver.class);
-        int mbFlags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) {
-            mbFlags |= PendingIntent.FLAG_IMMUTABLE;
-        }
-        session.setMediaButtonReceiver(
-                PendingIntent.getBroadcast(this, 0, mediaButton, mbFlags));
+        // Media buttons come ONLY through this callback (the framework
+        // routes them to the active session). There is deliberately no
+        // separate broadcast receiver: two delivery paths would fire
+        // every press twice.
         session.setCallback(new MediaSession.Callback() {
             @Override
             public void onPlay() {
-                NativePlayer.send("play");
+                sendUser("play");
             }
 
             @Override
             public void onPause() {
-                NativePlayer.send("pause");
+                sendUser("pause");
             }
 
             @Override
             public void onSkipToNext() {
-                NativePlayer.send("next");
+                sendUser("next");
             }
 
             @Override
             public void onSkipToPrevious() {
-                NativePlayer.send("prev");
+                sendUser("prev");
             }
 
             @Override
             public void onFastForward() {
-                NativePlayer.send("ff");
+                sendUser("ff");
             }
 
             @Override
             public void onRewind() {
-                NativePlayer.send("rew");
+                sendUser("rew");
             }
 
             @Override
             public void onStop() {
-                NativePlayer.send("pause");
+                sendUser("pause");
             }
         }, mainHandler);
-        session.setActive(true);
+        // The session is activated lazily in refresh(), the first time
+        // the page reports a book — activating it at service creation
+        // would hijack headset buttons from the user's music app
+        // before anything is playing here.
 
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         if (pm != null) {
@@ -173,7 +188,7 @@ public class PlaybackService extends Service {
         if (intent != null) {
             String cmd = intent.getStringExtra("cmd");
             if (cmd != null) {
-                NativePlayer.send(cmd);
+                sendUser(cmd);
             }
         }
         // NOT_STICKY: this keeper is meaningless without a live
@@ -207,21 +222,44 @@ public class PlaybackService extends Service {
                 .setActions(actions)
                 .setState(NativePlayer.playing
                                 ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
-                        NativePlayer.pos, NativePlayer.rate)
+                        // The page tracks sentences, not milliseconds;
+                        // publishing a sentence ordinal as a position
+                        // would be a lie to the system UI.
+                        PlaybackState.PLAYBACK_POSITION_UNKNOWN, NativePlayer.rate)
                 .build());
+
+        if (!session.isActive()
+                && (NativePlayer.playing || !NativePlayer.title.isEmpty())) {
+            session.setActive(true);
+        }
 
         if (NativePlayer.playing && !focusHeld && audioManager != null) {
             int result = audioManager.requestAudioFocus(focusListener,
                     AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
             focusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+            if (!focusHeld) {
+                // Another app owns the audio (e.g. a call is up): do
+                // not blast over it — pause the book instead.
+                NativePlayer.send("pause");
+            }
         } else if (!NativePlayer.playing && focusHeld && audioManager != null) {
             audioManager.abandonAudioFocus(focusListener);
             focusHeld = false;
         }
 
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm != null) {
-            nm.notify(NOTIFICATION_ID, buildNotification());
+        // Rebuild the notification only when what it SHOWS changes —
+        // the page reports every sentence, and re-posting on each one
+        // flickers the shade and can hit notification throttling.
+        String signature = NativePlayer.title + "|" + NativePlayer.chapter
+                + "|" + NativePlayer.playing + "|" + NativePlayer.pos
+                + "/" + NativePlayer.count;
+        if (!signature.equals(lastNotifySignature)) {
+            lastNotifySignature = signature;
+            NotificationManager nm =
+                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) {
+                nm.notify(NOTIFICATION_ID, buildNotification());
+            }
         }
     }
 
@@ -232,7 +270,22 @@ public class PlaybackService extends Service {
         if (Build.VERSION.SDK_INT >= 23) {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
-        return PendingIntent.getService(this, cmd.hashCode(), intent, flags);
+        // Stable request codes (String.hashCode works but is fragile).
+        int code = 10;
+        if ("prev".equals(cmd)) {
+            code = 11;
+        } else if ("rew".equals(cmd)) {
+            code = 12;
+        } else if ("play".equals(cmd)) {
+            code = 13;
+        } else if ("pause".equals(cmd)) {
+            code = 14;
+        } else if ("ff".equals(cmd)) {
+            code = 15;
+        } else if ("next".equals(cmd)) {
+            code = 16;
+        }
+        return PendingIntent.getService(this, code, intent, flags);
     }
 
     private Notification buildNotification() {

@@ -42,17 +42,28 @@ public final class NativePlayer {
         sink = s;
     }
 
-    public static void updateFromJson(String json) {
+    /** Called on a JavaBridge thread. Values are clamped: the bridge
+     *  is reachable by whatever page the WebView shows, so nothing it
+     *  sends may push an out-of-range value into a system API. The
+     *  update is synchronized so readers never see a torn snapshot
+     *  (new title with the previous book's chapter). */
+    public static synchronized void updateFromJson(String json) {
         try {
             JSONObject o = new JSONObject(json);
             playing = o.optBoolean("playing", false);
             title = o.optString("title", "");
             chapter = o.optString("chapter", "");
-            chapterIdx = o.optInt("chapterIdx", 0);
-            chapterCount = o.optInt("chapterCount", 0);
-            pos = o.optInt("pos", 0);
-            count = o.optInt("count", 0);
-            rate = (float) o.optDouble("rate", 1.0);
+            chapterIdx = Math.max(0, o.optInt("chapterIdx", 0));
+            chapterCount = Math.max(0, o.optInt("chapterCount", 0));
+            pos = Math.max(0, o.optInt("pos", 0));
+            count = Math.max(0, o.optInt("count", 0));
+            double r = o.optDouble("rate", 1.0);
+            if (Double.isNaN(r) || r < 0.25) {
+                r = 0.25;
+            } else if (r > 4.0) {
+                r = 4.0;
+            }
+            rate = (float) r;
         } catch (Exception e) {
             return;
         }

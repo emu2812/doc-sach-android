@@ -46,6 +46,7 @@ public class MainActivity extends Activity {
             "https://doc-sach.nguyenhailinh140101.workers.dev/";
 
     private static final int FILE_CHOOSER_REQUEST = 1001;
+    private static final int SYNC_FOLDER_REQUEST = 4213;
 
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
@@ -74,6 +75,12 @@ public class MainActivity extends Activity {
         cookies.setAcceptThirdPartyCookies(webView, true);
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                checkCloudCopy();
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri url = request.getUrl();
@@ -222,11 +229,17 @@ public class MainActivity extends Activity {
                     if (NativePlayer.playing) {
                         return;
                     }
+                    // Optimistic flip: the page's confirmation arrives
+                    // on the next bridge report (up to 1.5 s later), and
+                    // a second command inside that window must see the
+                    // NEW state, not toggle back.
+                    NativePlayer.playing = true;
                     id = "btnPlay";
                 } else if ("pause".equals(command)) {
                     if (!NativePlayer.playing) {
                         return;
                     }
+                    NativePlayer.playing = false;
                     id = "btnPlay";
                 } else if ("next".equals(command)) {
                     id = "btnNextCh";
@@ -242,8 +255,18 @@ public class MainActivity extends Activity {
                 w.post(new Runnable() {
                     @Override
                     public void run() {
-                        w.evaluateJavascript("(function(){var b=document.getElementById('"
-                                + id + "');if(b)b.click();})()", null);
+                        // The WebView may have been swapped (renderer
+                        // recovery) or destroyed since this command was
+                        // issued; touching the dead one can throw.
+                        if (w != webView) {
+                            return;
+                        }
+                        try {
+                            w.evaluateJavascript("(function(){var b=document.getElementById('"
+                                    + id + "');if(b)b.click();})()", null);
+                        } catch (Exception e) {
+                            // View went away mid-command: drop it.
+                        }
                     }
                 });
             }
@@ -407,6 +430,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == SYNC_FOLDER_REQUEST) {
+            if (resultCode == RESULT_OK && SyncStore.acceptFolder(this, data)) {
+                syncStatus("Đã chọn thư mục đồng bộ — thư viện sẽ tự ghi vào đó.");
+                // The folder may already hold a backup from another
+                // device: offer it to the page right away.
+                checkCloudCopy();
+            } else if (resultCode == RESULT_OK) {
+                syncStatus("Không lấy được quyền ghi vào thư mục đã chọn.");
+            }
+            return;
+        }
         if (requestCode != FILE_CHOOSER_REQUEST) {
             return;
         }
@@ -465,12 +499,141 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Page → native playback-state reports (see NativePlayer). */
-    private static class NativeBridge {
+    /** Page → native bridge: playback-state reports (see NativePlayer)
+     *  plus the cloud-sync surface. Every method is defensive: the page
+     *  is a web document and may call these at any time. */
+    private class NativeBridge {
+
         @JavascriptInterface
         public void postState(String json) {
             NativePlayer.updateFromJson(json);
         }
+
+        /** Opens the system folder picker so the user can point the
+         *  app at a folder inside Drive / OneDrive / MEGA on this
+         *  phone. One pick; the permission persists. */
+        @JavascriptInterface
+        public void chooseSyncFolder() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        startActivityForResult(SyncStore.pickFolderIntent(),
+                                SYNC_FOLDER_REQUEST);
+                    } catch (Exception e) {
+                        syncStatus("Máy không mở được trình chọn thư mục.");
+                    }
+                }
+            });
+        }
+
+        /** The page pushes its library backup JSON whenever the
+         *  library changes; it lands in the sync folder. */
+        @JavascriptInterface
+        public void syncLibrary(String json) {
+            if (json == null || json.length() == 0) {
+                return;
+            }
+            SyncStore.writeLibrary(MainActivity.this, json, new SyncStore.Status() {
+                @Override
+                public void onStatus(String message) {
+                    syncStatus(message);
+                }
+            });
+        }
+
+        /** Whether a sync folder is already chosen (page shows the
+         *  right button label). */
+        @JavascriptInterface
+        public boolean hasSyncFolder() {
+            return SyncStore.hasFolder(MainActivity.this);
+        }
+
+        /** Opens a cloud service's website in the phone's browser, so
+         *  the user can sign in to ANOTHER account there. Restricted
+         *  to the three services' own hosts. */
+        @JavascriptInterface
+        public void openWeb(final String url) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        Uri uri = Uri.parse(url);
+                        String host = uri.getHost() != null
+                                ? uri.getHost().toLowerCase(java.util.Locale.US) : "";
+                        if ("https".equals(uri.getScheme())
+                                && (host.equals("drive.google.com")
+                                || host.equals("onedrive.live.com")
+                                || host.equals("mega.nz")
+                                || host.equals("www.mega.nz"))) {
+                            startActivity(new Intent(Intent.ACTION_VIEW, uri));
+                        }
+                    } catch (Exception e) {
+                        // Unknown host or no browser: ignore quietly.
+                    }
+                }
+            });
+        }
+    }
+
+    /** Reports a sync status line back into the page (its sync card),
+     *  when the page provides the hook. */
+    private void syncStatus(final String message) {
+        final WebView w = webView;
+        if (w == null) {
+            return;
+        }
+        w.post(new Runnable() {
+            @Override
+            public void run() {
+                if (w != webView) {
+                    return;
+                }
+                try {
+                    w.evaluateJavascript("window.DocSachSyncStatus&&window.DocSachSyncStatus("
+                            + org.json.JSONObject.quote(message) + ")", null);
+                } catch (Exception e) {
+                    // Page without the hook: the toast-less native
+                    // feedback is enough.
+                }
+            }
+        });
+    }
+
+    /** If a sync folder is set and holds a library backup, hand it to
+     *  the page, which merges it when it is newer than the local
+     *  library. Called when the page finishes loading. */
+    private void checkCloudCopy() {
+        if (!SyncStore.hasFolder(this)) {
+            return;
+        }
+        SyncStore.readLibrary(this, new SyncStore.ReadCallback() {
+            @Override
+            public void onRead(final String json, long lastModified) {
+                if (json == null || json.length() == 0) {
+                    return;
+                }
+                final WebView w = webView;
+                if (w == null) {
+                    return;
+                }
+                w.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (w != webView) {
+                            return;
+                        }
+                        try {
+                            w.evaluateJavascript(
+                                    "window.DocSachSyncCheck&&window.DocSachSyncCheck("
+                                            + org.json.JSONObject.quote(json) + ")", null);
+                        } catch (Exception e) {
+                            // Page without the hook: nothing to merge.
+                        }
+                    }
+                });
+            }
+        });
     }
 
     @Override
