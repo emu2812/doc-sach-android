@@ -14,27 +14,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare stable signing key
+      - name: Restore stable signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
         run: |
           set -euo pipefail
-          # One fixed key for every build, kept in the repo, so new
-          # versions install OVER the old one instead of being refused
-          # for a signature mismatch. First run generates and commits
-          # it back (a GITHUB_TOKEN push does not retrigger this
-          # workflow, so there is no loop).
-          if [ ! -f signing/release.keystore ]; then
-            mkdir -p signing
-            keytool -genkeypair -keystore signing/release.keystore \
-              -storepass docsach -keypass docsach \
-              -alias docsach -keyalg RSA -keysize 2048 \
-              -validity 10000 -dname "CN=Doc Sach,O=Personal,C=VN" -noprompt
-            git config user.email "actions@github.com"
-            git config user.name "github-actions"
-            git add signing/release.keystore
-            git commit -m "Add stable signing keystore"
-            git push
+          # One fixed key for every build, held as an encrypted CI
+          # secret (never in the repo), so new versions install OVER
+          # the old one instead of being refused for a signature
+          # mismatch. The hash is printed so it can be checked against
+          # the known key before trusting the artifact.
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "Missing KEYSTORE_B64 secret" >&2
+            exit 1
           fi
-          ls -la signing
+          mkdir -p signing
+          echo "$KEYSTORE_B64" | base64 -d > signing/release.keystore
+          sha256sum signing/release.keystore
 
       - name: Build debug APK with SDK build-tools (no Gradle)
         run: |
@@ -77,7 +73,7 @@ jobs:
           "$BTBIN/apksigner" sign \
             --ks signing/release.keystore --ks-pass pass:docsach --key-pass pass:docsach \
             --out dist/doc-sach.apk build/app-aligned.apk
-          "$BTBIN/apksigner" verify --verbose dist/doc-sach.apk
+          "$BTBIN/apksigner" verify --verbose --print-certs dist/doc-sach.apk
           ls -la dist
 
       - name: Upload APK artifact

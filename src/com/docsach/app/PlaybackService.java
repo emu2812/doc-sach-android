@@ -82,20 +82,19 @@ public class PlaybackService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        return START_STICKY;
-    }
-
-    @Override
-    public void onTaskRemoved(Intent rootIntent) {
-        // Swiping the app out of Recents must not drop the keeper while
-        // the process is still alive: re-arm the foreground service.
-        Intent restart = new Intent(this, PlaybackService.class);
-        if (Build.VERSION.SDK_INT >= 26) {
-            startForegroundService(restart);
-        } else {
-            startService(restart);
+        // Refresh the wake lock: the single acquire in onCreate has a
+        // bounded timeout, and every (re)start of the service is a sign
+        // the user is actively using the app, so top the lock back up.
+        if (wakeLock != null && !wakeLock.isHeld()) {
+            wakeLock.acquire(12L * 60L * 60L * 1000L);
         }
-        super.onTaskRemoved(rootIntent);
+        // NOT_STICKY on purpose: this keeper is meaningless without a
+        // live activity/WebView, so after a process death it must not
+        // resurrect as an empty shell holding a wake lock. (No
+        // onTaskRemoved restart either: a running foreground service
+        // already survives task removal by default, and starting one
+        // from the background can throw on Android 12+.)
+        return START_NOT_STICKY;
     }
 
     @Override

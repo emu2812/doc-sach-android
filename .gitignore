@@ -1,0 +1,4 @@
+# The signing key lives in the CI secret KEYSTORE_B64, never in git.
+signing/
+build/
+dist/

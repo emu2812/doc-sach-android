@@ -49,12 +49,10 @@ public class MainActivity extends Activity {
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-
-        webView = new WebView(this);
-        setContentView(webView);
+    /** Builds the WebView with all settings and clients. Also used to
+     *  recover when the renderer process dies mid-session. */
+    private WebView buildWebView() {
+        WebView webView = new WebView(this);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -73,7 +71,40 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri url = request.getUrl();
                 String scheme = url != null ? url.getScheme() : null;
-                return !("http".equals(scheme) || "https".equals(scheme));
+                if ("http".equals(scheme) || "https".equals(scheme)) {
+                    return false; // load inside the WebView
+                }
+                // A small allowlist of links a book may contain: hand
+                // them to the phone's own apps instead of dead-ending.
+                if ("tel".equals(scheme) || "mailto".equals(scheme) || "sms".equals(scheme)) {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW, url));
+                    } catch (Exception e) {
+                        // No app can take it: swallow quietly.
+                    }
+                }
+                return true;
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view,
+                                                 android.webkit.RenderProcessGoneDetail detail) {
+                // The Chromium renderer died (usually memory pressure
+                // during a long session). Rebuild the WebView and reload
+                // instead of letting the whole app crash; the page
+                // restores the reading position itself.
+                if (view == MainActivity.this.webView) {
+                    WebView fresh = buildWebView();
+                    MainActivity.this.webView = fresh;
+                    setContentView(fresh);
+                    try {
+                        view.destroy();
+                    } catch (Exception e) {
+                        // Already gone; nothing to clean up.
+                    }
+                    fresh.loadUrl(HOME_URL);
+                }
+                return true;
             }
         });
 
@@ -139,6 +170,16 @@ public class MainActivity extends Activity {
             }
         });
 
+        return webView;
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        webView = buildWebView();
+        setContentView(webView);
+
         // Notification permission (Android 13+): the foreground service's
         // ongoing notification is what keeps the background playback
         // visible and trustworthy; without it some phones kill silently.
@@ -157,13 +198,22 @@ public class MainActivity extends Activity {
             startService(service);
         }
 
-        String shared = extractSharedUrl(getIntent());
+        // A launch share is consumed only on a truly fresh start: on a
+        // recreation the same intent would otherwise add the link a
+        // second time. After consuming, the intent is cleared so no
+        // later recreation can replay it.
+        String shared = savedInstanceState == null ? extractSharedUrl(getIntent()) : null;
         if (shared != null) {
             webView.loadUrl(HOME_URL + "?add=" + Uri.encode(shared));
+            setIntent(new Intent(Intent.ACTION_MAIN));
         } else if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
         } else {
             webView.loadUrl(HOME_URL);
+            if (isShareIntent(getIntent())) {
+                Toast.makeText(this, "Không thấy link trong nội dung chia sẻ",
+                        Toast.LENGTH_SHORT).show();
+            }
         }
 
         maybeAskBatteryExemption();
@@ -176,7 +226,19 @@ public class MainActivity extends Activity {
         String shared = extractSharedUrl(intent);
         if (shared != null && webView != null) {
             webView.loadUrl(HOME_URL + "?add=" + Uri.encode(shared));
+            setIntent(new Intent(Intent.ACTION_MAIN));
+        } else if (isShareIntent(intent)) {
+            Toast.makeText(this, "Không thấy link trong nội dung chia sẻ",
+                    Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private boolean isShareIntent(Intent intent) {
+        if (intent == null) {
+            return false;
+        }
+        String action = intent.getAction();
+        return Intent.ACTION_SEND.equals(action) || Intent.ACTION_VIEW.equals(action);
     }
 
     /**
@@ -185,6 +247,10 @@ public class MainActivity extends Activity {
      * null for a normal launch. The web page reads it from ?add= and
      * files YouTube videos straight into the library.
      */
+    private static final java.util.regex.Pattern URL_PATTERN =
+            java.util.regex.Pattern.compile("https?://\\S+",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
     private String extractSharedUrl(Intent intent) {
         if (intent == null) {
             return null;
@@ -195,20 +261,55 @@ public class MainActivity extends Activity {
             Uri data = intent.getData();
             candidate = data != null ? data.toString() : null;
         } else if (Intent.ACTION_SEND.equals(action)) {
-            CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
-            if (text != null) {
-                for (String part : text.toString().split("\\s+")) {
-                    if (part.startsWith("http://") || part.startsWith("https://")) {
-                        candidate = part;
-                        break;
-                    }
+            String text = null;
+            CharSequence t = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+            if (t != null) {
+                text = t.toString();
+            }
+            if (text == null) {
+                CharSequence s = intent.getCharSequenceExtra(Intent.EXTRA_SUBJECT);
+                if (s != null) {
+                    text = s.toString();
                 }
+            }
+            if (text != null) {
+                candidate = findUrl(text);
             }
         }
         if (candidate != null && candidate.startsWith(HOME_URL)) {
             return null; // our own page re-shared: nothing to add
         }
         return candidate;
+    }
+
+    /** First real URL in shared text, preferring a YouTube host when
+     *  several links are present; sentence punctuation stuck to the end
+     *  of a link is trimmed off. */
+    private String findUrl(String text) {
+        java.util.regex.Matcher m = URL_PATTERN.matcher(text);
+        String first = null;
+        while (m.find()) {
+            String u = trimUrl(m.group());
+            if (u == null) {
+                continue;
+            }
+            if (first == null) {
+                first = u;
+            }
+            String lower = u.toLowerCase(java.util.Locale.US);
+            if (lower.contains("youtube.com/") || lower.contains("youtu.be/")) {
+                return u;
+            }
+        }
+        return first;
+    }
+
+    private String trimUrl(String u) {
+        int end = u.length();
+        while (end > 0 && ")]}>,.!?'\"".indexOf(u.charAt(end - 1)) >= 0) {
+            end--;
+        }
+        return end > 8 ? u.substring(0, end) : null;
     }
 
     /**
@@ -315,7 +416,13 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        stopService(new Intent(this, PlaybackService.class));
+        // The keeper service is stopped only on a real exit (Back at
+        // the root, finish()). A system-initiated destruction — memory
+        // pressure, a recreation the config flags did not cover — must
+        // not tear down background playback.
+        if (isFinishing()) {
+            stopService(new Intent(this, PlaybackService.class));
+        }
         if (webView != null) {
             webView.destroy();
             webView = null;
