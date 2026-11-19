@@ -17,6 +17,7 @@ import android.provider.Settings;
 import android.view.KeyEvent;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
+import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -61,6 +62,12 @@ public class MainActivity extends Activity {
         // The page chains short audio chunks; without this, WebView can
         // refuse to start the next chunk while the app is backgrounded.
         settings.setMediaPlaybackRequiresUserGesture(false);
+
+        // Bridge to the native playback core: the page reports its
+        // playback state (book, chapter, sentence, playing) and the
+        // native layer (lock screen, notification, headset, calls)
+        // sends commands back through the sink registered in onCreate.
+        webView.addJavascriptInterface(new NativeBridge(), "DocSachBridge");
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
@@ -197,6 +204,50 @@ public class MainActivity extends Activity {
         } else {
             startService(service);
         }
+
+        // Native → page commands. Lock-screen controls, the media
+        // notification, headset buttons and call handling all land
+        // here; each command clicks the page's own button, and the
+        // play/pause pair is guarded by the page's reported state
+        // because the page's play button is a toggle.
+        NativePlayer.setSink(new NativePlayer.CommandSink() {
+            @Override
+            public void send(String command) {
+                final WebView w = webView;
+                if (w == null) {
+                    return;
+                }
+                final String id;
+                if ("play".equals(command)) {
+                    if (NativePlayer.playing) {
+                        return;
+                    }
+                    id = "btnPlay";
+                } else if ("pause".equals(command)) {
+                    if (!NativePlayer.playing) {
+                        return;
+                    }
+                    id = "btnPlay";
+                } else if ("next".equals(command)) {
+                    id = "btnNextCh";
+                } else if ("prev".equals(command)) {
+                    id = "btnPrevCh";
+                } else if ("ff".equals(command)) {
+                    id = "btnFwd30";
+                } else if ("rew".equals(command)) {
+                    id = "btnBack15";
+                } else {
+                    return;
+                }
+                w.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        w.evaluateJavascript("(function(){var b=document.getElementById('"
+                                + id + "');if(b)b.click();})()", null);
+                    }
+                });
+            }
+        });
 
         // A launch share is consumed only on a truly fresh start: on a
         // recreation the same intent would otherwise add the link a
@@ -414,8 +465,17 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Page → native playback-state reports (see NativePlayer). */
+    private static class NativeBridge {
+        @JavascriptInterface
+        public void postState(String json) {
+            NativePlayer.updateFromJson(json);
+        }
+    }
+
     @Override
     protected void onDestroy() {
+        NativePlayer.setSink(null);
         // The keeper service is stopped only on a real exit (Back at
         // the root, finish()). A system-initiated destruction — memory
         // pressure, a recreation the config flags did not cover — must
