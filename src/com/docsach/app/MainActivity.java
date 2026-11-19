@@ -2,13 +2,18 @@ package com.docsach.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.view.KeyEvent;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
@@ -152,11 +157,99 @@ public class MainActivity extends Activity {
             startService(service);
         }
 
-        if (savedInstanceState != null) {
+        String shared = extractSharedUrl(getIntent());
+        if (shared != null) {
+            webView.loadUrl(HOME_URL + "?add=" + Uri.encode(shared));
+        } else if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
         } else {
             webView.loadUrl(HOME_URL);
         }
+
+        maybeAskBatteryExemption();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String shared = extractSharedUrl(intent);
+        if (shared != null && webView != null) {
+            webView.loadUrl(HOME_URL + "?add=" + Uri.encode(shared));
+        }
+    }
+
+    /**
+     * A YouTube (or any) link arriving via "Chia sẻ" (ACTION_SEND) or
+     * "Mở bằng" (ACTION_VIEW). Returns the first http(s) link found, or
+     * null for a normal launch. The web page reads it from ?add= and
+     * files YouTube videos straight into the library.
+     */
+    private String extractSharedUrl(Intent intent) {
+        if (intent == null) {
+            return null;
+        }
+        String action = intent.getAction();
+        String candidate = null;
+        if (Intent.ACTION_VIEW.equals(action)) {
+            Uri data = intent.getData();
+            candidate = data != null ? data.toString() : null;
+        } else if (Intent.ACTION_SEND.equals(action)) {
+            CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+            if (text != null) {
+                for (String part : text.toString().split("\\s+")) {
+                    if (part.startsWith("http://") || part.startsWith("https://")) {
+                        candidate = part;
+                        break;
+                    }
+                }
+            }
+        }
+        if (candidate != null && candidate.startsWith(HOME_URL)) {
+            return null; // our own page re-shared: nothing to add
+        }
+        return candidate;
+    }
+
+    /**
+     * One-time ask: battery optimisation is the number-one reason
+     * background listening gets killed on real phones. If the app is not
+     * exempt yet, explain in one sentence and offer the system's own
+     * one-tap exemption dialog. Asked once, never nagged again.
+     */
+    private void maybeAskBatteryExemption() {
+        if (Build.VERSION.SDK_INT < 23) {
+            return;
+        }
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) {
+            return;
+        }
+        final SharedPreferences prefs = getSharedPreferences("docsach", MODE_PRIVATE);
+        if (prefs.getBoolean("batteryAsked", false)) {
+            return;
+        }
+        prefs.edit().putBoolean("batteryAsked", true).apply();
+        new AlertDialog.Builder(this)
+                .setTitle("Nghe chạy nền không bị ngắt")
+                .setMessage("Một số điện thoại tự tắt ứng dụng chạy nền để tiết kiệm pin. "
+                        + "Cho phép Đọc Sách không bị tối ưu pin thì nghe sách khi tắt "
+                        + "màn hình sẽ liền mạch, không bị ngắt giữa chừng.")
+                .setPositiveButton("Cho phép", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        try {
+                            startActivity(new Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:" + getPackageName())));
+                        } catch (Exception e) {
+                            // Some vendors hide that screen; the manual
+                            // path is in the delivery note to the user.
+                        }
+                    }
+                })
+                .setNegativeButton("Để sau", null)
+                .show();
     }
 
     @Override

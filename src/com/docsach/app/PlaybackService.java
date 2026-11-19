@@ -86,6 +86,19 @@ public class PlaybackService extends Service {
     }
 
     @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // Swiping the app out of Recents must not drop the keeper while
+        // the process is still alive: re-arm the foreground service.
+        Intent restart = new Intent(this, PlaybackService.class);
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(restart);
+        } else {
+            startService(restart);
+        }
+        super.onTaskRemoved(rootIntent);
+    }
+
+    @Override
     public void onDestroy() {
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
