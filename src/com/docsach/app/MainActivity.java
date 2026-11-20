@@ -564,12 +564,15 @@ public class MainActivity extends Activity {
                 installed = false;
             }
             if (installed) {
-                runOnUiThread(() -> {
-                    WebView w = webView;
-                    if (w != null) {
-                        w.evaluateJavascript(
-                                "window.DocSachCloudPick&&window.DocSachCloudPick()",
-                                null);
+                MainActivity.this.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        WebView w = webView;
+                        if (w != null) {
+                            w.evaluateJavascript(
+                                    "window.DocSachCloudPick&&window.DocSachCloudPick()",
+                                    null);
+                        }
                     }
                 });
             } else {
