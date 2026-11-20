@@ -82,6 +82,19 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onReceivedError(WebView view, WebResourceRequest request,
+                                        android.webkit.WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                // Only the main page failing matters (a dead font or
+                // script request must not replace the book): show a
+                // friendly offline page with a retry button instead of
+                // the browser's blank error screen.
+                if (request != null && request.isForMainFrame()) {
+                    showOfflinePage(view);
+                }
+            }
+
+            @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri url = request.getUrl();
                 String scheme = url != null ? url.getScheme() : null;
@@ -640,6 +653,29 @@ public class MainActivity extends Activity {
     /** If a sync folder is set and holds a library backup, hand it to
      *  the page, which merges it when it is newer than the local
      *  library. Called when the page finishes loading. */
+    /* Friendly offline page for when the main page cannot load at all
+       (no signal on the road, Wi-Fi dropped): without it the user just
+       gets the WebView's blank built-in error screen and no way back.
+       The retry button simply navigates to HOME_URL again. */
+    private void showOfflinePage(WebView view) {
+        String html = "<!DOCTYPE html><html lang=\"vi\"><head><meta charset=\"utf-8\">"
+            + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            + "<style>body{font-family:sans-serif;background:#111827;color:#f9fafb;display:flex;"
+            + "align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center}"
+            + ".box{padding:24px}h1{font-size:20px}p{color:#d1d5db;line-height:1.5}"
+            + "a{display:inline-block;margin-top:16px;background:#2563eb;color:#fff;padding:12px 28px;"
+            + "border-radius:10px;text-decoration:none;font-size:17px}</style></head><body>"
+            + "<div class=\"box\"><h1>Không có kết nối mạng</h1>"
+            + "<p>Ứng dụng cần mạng để mở thư viện sách.<br>"
+            + "Hãy kiểm tra Wi-Fi hoặc dữ liệu di động rồi thử lại.</p>"
+            + "<a href=\"" + HOME_URL + "\">Thử lại</a></div></body></html>";
+        try {
+            view.loadDataWithBaseURL(HOME_URL, html, "text/html", "UTF-8", null);
+        } catch (Exception e) {
+            // If even this fails there is nothing sensible left to show.
+        }
+    }
+
     private void checkCloudCopy() {
         if (!SyncStore.hasFolder(this)) {
             return;
