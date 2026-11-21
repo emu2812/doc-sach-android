@@ -11,6 +11,7 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Message;
 import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
@@ -63,6 +64,8 @@ public class MainActivity extends Activity {
         // The page chains short audio chunks; without this, WebView can
         // refuse to start the next chunk while the app is backgrounded.
         settings.setMediaPlaybackRequiresUserGesture(false);
+        // Required for onCreateWindow below to fire at all.
+        settings.setSupportMultipleWindows(true);
 
         // Bridge to the native playback core: the page reports its
         // playback state (book, chapter, sentence, playing) and the
@@ -136,6 +139,31 @@ public class MainActivity extends Activity {
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
+            // A link that asks for a new window (target=_blank /
+            // window.open) would otherwise die silently in this
+            // single-window shell. Capture the URL through a throwaway
+            // WebView and hand it to the system browser instead.
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog,
+                                          boolean isUserGesture, Message resultMsg) {
+                WebView probe = new WebView(MainActivity.this);
+                probe.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView v, String url) {
+                        try {
+                            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                        } catch (Exception e) {
+                            // no browser able to take it: leave the app as is
+                        }
+                        return true;
+                    }
+                });
+                WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+                transport.setWebView(probe);
+                resultMsg.sendToTarget();
+                return true;
+            }
+
             @Override
             public boolean onShowFileChooser(WebView view,
                                              ValueCallback<Uri[]> callback,
