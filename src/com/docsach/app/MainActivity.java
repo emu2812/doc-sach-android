@@ -51,6 +51,7 @@ public class MainActivity extends Activity {
 
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
+    private NativeTts nativeTts;
 
     /** Builds the WebView with all settings and clients. Also used to
      *  recover when the renderer process dies mid-session. */
@@ -627,6 +628,30 @@ public class MainActivity extends Activity {
             }
         }
 
+        /** Starts the on-device TTS engine (the unlimited fallback
+         *  voice). Readiness and utterance events come back through
+         *  window.DocSachNativeTtsEvent. */
+        @JavascriptInterface
+        public void ttsInit() {
+            tts().init();
+        }
+
+        /** Speaks a queue of utterances; payload JSON from the page:
+         *  {rate, lang, items:[{uid, text}]}. */
+        @JavascriptInterface
+        public void ttsSpeak(String json) {
+            if (json != null) {
+                tts().speak(json);
+            }
+        }
+
+        /** Stops the on-device voice at once (pause / stop / chapter
+         *  change on the page). */
+        @JavascriptInterface
+        public void ttsStop() {
+            tts().stop();
+        }
+
         /** Opens a cloud service's website in the phone's browser, so
          *  the user can sign in to ANOTHER account there. Restricted
          *  to the three services' own hosts. */
@@ -652,6 +677,43 @@ public class MainActivity extends Activity {
                 }
             });
         }
+    }
+
+    /** The shared on-device TTS engine, created on first use. Its
+     *  events are forwarded into the page's native-voice hook. */
+    private NativeTts tts() {
+        if (nativeTts == null) {
+            nativeTts = new NativeTts(this, new NativeTts.Sink() {
+                @Override
+                public void onEvent(String json) {
+                    ttsPageEvent(json);
+                }
+            });
+        }
+        return nativeTts;
+    }
+
+    /** Delivers one native-TTS event (a JSON string) to the page. */
+    private void ttsPageEvent(final String json) {
+        final WebView w = webView;
+        if (w == null) {
+            return;
+        }
+        w.post(new Runnable() {
+            @Override
+            public void run() {
+                if (w != webView) {
+                    return;
+                }
+                try {
+                    w.evaluateJavascript(
+                            "window.DocSachNativeTtsEvent&&window.DocSachNativeTtsEvent("
+                                    + org.json.JSONObject.quote(json) + ")", null);
+                } catch (Exception e) {
+                    // Page without the hook: nothing to deliver to.
+                }
+            }
+        });
     }
 
     /** Reports a sync status line back into the page (its sync card),
@@ -739,6 +801,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (nativeTts != null) {
+            nativeTts.shutdown();
+            nativeTts = null;
+        }
         NativePlayer.setSink(null);
         // The keeper service is stopped only on a real exit (Back at
         // the root, finish()). A system-initiated destruction — memory
