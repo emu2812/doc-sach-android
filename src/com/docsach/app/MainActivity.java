@@ -16,6 +16,7 @@ import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.KeyEvent;
+import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
@@ -679,6 +680,33 @@ public class MainActivity extends Activity {
                         }
                     } catch (Exception e) {
                         // Unknown host or no browser: ignore quietly.
+                    }
+                }
+            });
+        }
+
+        /** Black-screen listening (the page's "Màn hình đen" mode):
+         *  drop brightness to the minimum and hold the screen on,
+         *  so playback that stops when the page is hidden (the
+         *  YouTube player) keeps running with a dark screen.
+         *  Restores the system brightness when switched off. */
+        @JavascriptInterface
+        public void blackScreen(final boolean on) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        WindowManager.LayoutParams lp = getWindow().getAttributes();
+                        if (on) {
+                            lp.screenBrightness = 0.01f;
+                            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        } else {
+                            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+                            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        }
+                        getWindow().setAttributes(lp);
+                    } catch (Exception e) {
+                        // Brightness is a nicety; never crash over it.
                     }
                 }
             });
