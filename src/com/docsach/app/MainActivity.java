@@ -683,6 +683,31 @@ public class MainActivity extends Activity {
                 }
             });
         }
+
+        /** Open the phone's own YouTube app directly (the page's
+         *  YouTube buttons call this). Falls back to any handler —
+         *  usually the browser — when the app is not installed. */
+        @JavascriptInterface
+        public void openYouTube() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Intent direct = new Intent(Intent.ACTION_VIEW,
+                            Uri.parse("https://www.youtube.com"));
+                    direct.setPackage("com.google.android.youtube");
+                    try {
+                        startActivity(direct);
+                    } catch (Exception e) {
+                        try {
+                            startActivity(new Intent(Intent.ACTION_VIEW,
+                                    Uri.parse("https://www.youtube.com")));
+                        } catch (Exception e2) {
+                            // No YouTube app and no browser: stay put.
+                        }
+                    }
+                }
+            });
+        }
     }
 
     /** The shared on-device TTS engine, created on first use. Its
