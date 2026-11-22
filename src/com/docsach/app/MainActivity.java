@@ -62,6 +62,12 @@ public class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
+        // The app IS the live page: it changes often (voices, fixes)
+        // and a stale cached copy once left a phone running a weeks-
+        // old page with none of the new features. Never serve the
+        // page from cache; also drop whatever an older build cached.
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        webView.clearCache(true);
         // The page chains short audio chunks; without this, WebView can
         // refuse to start the next chunk while the app is backgrounded.
         settings.setMediaPlaybackRequiresUserGesture(false);
