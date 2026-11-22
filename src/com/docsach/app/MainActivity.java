@@ -685,6 +685,52 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** Open a YouTube URL in the Brave browser, whose
+         *  background-audio mode keeps YouTube playing with the
+         *  screen off — something the embedded player in this app
+         *  cannot do, because YouTube's player stops when the page
+         *  is hidden. Falls back to any handler, then to Brave's
+         *  store page when Brave is not installed. Only YouTube
+         *  hosts are accepted. */
+        @JavascriptInterface
+        public void openBrave(final String url) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        Uri uri = Uri.parse(url);
+                        String host = uri.getHost() != null
+                                ? uri.getHost().toLowerCase(java.util.Locale.US) : "";
+                        if (!"https".equals(uri.getScheme())
+                                || !(host.equals("www.youtube.com")
+                                || host.equals("youtube.com")
+                                || host.equals("m.youtube.com")
+                                || host.equals("youtu.be"))) {
+                            return;
+                        }
+                        Intent inBrave = new Intent(Intent.ACTION_VIEW, uri);
+                        inBrave.setPackage("com.brave.browser");
+                        try {
+                            startActivity(inBrave);
+                        } catch (Exception e) {
+                            try {
+                                startActivity(new Intent(Intent.ACTION_VIEW, uri));
+                            } catch (Exception e2) {
+                                try {
+                                    startActivity(new Intent(Intent.ACTION_VIEW,
+                                            Uri.parse("https://play.google.com/store/apps/details?id=com.brave.browser")));
+                                } catch (Exception e3) {
+                                    // Nothing can take it: stay put.
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Bad URL: ignore quietly.
+                    }
+                }
+            });
+        }
+
         /** Black-screen listening (the page's "Màn hình đen" mode):
          *  drop brightness to the minimum and hold the screen on,
          *  so playback that stops when the page is hidden (the
