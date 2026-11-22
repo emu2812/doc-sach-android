@@ -153,6 +153,13 @@ final class NativeTts {
                 if (text.length() == 0) continue;
                 int mode = i == 0 ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
                 tts.speak(text, mode, null, uid);
+                // a narrator's micro-breath between sentences: queued
+                // back-to-back, the engine reads like a telegram; a
+                // short silence makes the device voice flow. The page
+                // ignores these uids (they map to no sentence).
+                if (i < items.length() - 1) {
+                    tts.playSilentUtterance(160, TextToSpeech.QUEUE_ADD, "sil" + i);
+                }
             }
         } catch (Exception e) {
             emit("{\"type\":\"error\",\"reason\":\"bad_payload\"}");
