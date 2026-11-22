@@ -20,6 +20,10 @@ public final class NativePlayer {
     }
 
     public static volatile boolean playing = false;
+    /** Page playback mode: "tts", "audio" or "yt". The service
+     *  must not grab audio focus away from YouTube playback (see
+     *  PlaybackService), so the mode travels with the state. */
+    public static volatile String mode = "";
     public static volatile String title = "";
     public static volatile String chapter = "";
     public static volatile int chapterIdx = 0;
@@ -51,6 +55,7 @@ public final class NativePlayer {
         try {
             JSONObject o = new JSONObject(json);
             playing = o.optBoolean("playing", false);
+            mode = o.optString("mode", "");
             title = o.optString("title", "");
             chapter = o.optString("chapter", "");
             chapterIdx = Math.max(0, o.optInt("chapterIdx", 0));

@@ -233,7 +233,15 @@ public class PlaybackService extends Service {
             session.setActive(true);
         }
 
-        if (NativePlayer.playing && !focusHeld && audioManager != null) {
+        // YouTube mode is exempt from the focus request: the video
+        // player inside the WebView holds audio focus itself, and
+        // this request used to steal it right back — the system
+        // granted the service focus, the WebView player got a focus
+        // LOSS and paused, the page reported paused, the service
+        // abandoned focus, and the next play repeated the cycle:
+        // the video played a few seconds and stopped, every time.
+        if (NativePlayer.playing && !focusHeld && audioManager != null
+                && !"yt".equals(NativePlayer.mode)) {
             int result = audioManager.requestAudioFocus(focusListener,
                     AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
             focusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
